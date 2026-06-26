@@ -14,7 +14,10 @@ def get_embeddings():
         model_kwargs = {"device" : 'cpu'}
     )
 
-def build_vector_store(transcript : str)->Chroma:
+def _collection_name(meeting_id: str = None) -> str:
+    return f"{COLLECTION_NAME}_{meeting_id}" if meeting_id else COLLECTION_NAME
+
+def build_vector_store(transcript : str, meeting_id: str = None)->Chroma:
     print("Building vector Store")
 
     splitter = RecursiveCharacterTextSplitter(
@@ -32,7 +35,7 @@ def build_vector_store(transcript : str)->Chroma:
     vector_store = Chroma.from_documents(
         documents= docs,
         embedding=embeddings,
-        collection_name=COLLECTION_NAME,
+        collection_name=_collection_name(meeting_id),
         persist_directory=CHROMA_DIR
     )
 
@@ -40,10 +43,10 @@ def build_vector_store(transcript : str)->Chroma:
 
 
 
-def load_vector_store() ->Chroma:
+def load_vector_store(meeting_id: str = None) ->Chroma:
     embeddings = get_embeddings()
     vector_store = Chroma(
-        collection_name=COLLECTION_NAME,
+        collection_name=_collection_name(meeting_id),
         embedding_function= embeddings,
         persist_directory=CHROMA_DIR
     )
@@ -55,4 +58,3 @@ def get_retriever(vector_store : Chroma, k :int = 4):
         search_type = 'similarity',
         search_kwargs = {"k":k}
     )
-

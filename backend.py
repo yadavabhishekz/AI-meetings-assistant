@@ -64,12 +64,18 @@ def _update(meeting_id: str, **fields):
 
 def _process_meeting(meeting_id: str, source: str, language: str):
     try:
+        print("STEP 1")
         _update(meeting_id, status="fetching_audio")
+
+
+        print("STEP 2")
         chunks = process_input(source)
 
+        print("STEP 3")
         _update(meeting_id, status="transcribing")
         transcript = transcribe_all(chunks, language)
 
+        print("STEP 4")
         _update(meeting_id, status="summarizing")
         title = generate_title(transcript)
         summary = summarize(transcript)

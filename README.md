@@ -12,14 +12,14 @@ RECAP is a full-stack AI pipeline that ingests any video or audio source, extrac
 - **Transcription** — Groq-hosted Whisper (`whisper-large-v3-turbo`) for English; Sarvam AI (`saaras:v2.5`) for Hinglish (transcribes *and* translates to English in one shot)
 - **Summarization** — Map-reduce chain over chunked transcript using Llama 3.3-70B on Groq
 - **Structured Extraction** — Action items (with owner + deadline), key decisions, and open/unresolved questions
-- **RAG Q&A** — Ask anything about the meeting; answers are grounded in the transcript via ChromaDB + `all-MiniLM-L6-v2` embeddings
+- **RAG Q&A** — Ask anything about the meeting; answers are grounded in the transcript via ChromaDB + `all-MiniLM-L6-v2` embeddings, with each meeting kept in its own isolated collection
 
 ---
 
 ## Architecture
 
 ```
-Input (YouTube URL / local file)
+Input (YouTube URL / local file upload)
         │
         ▼
 utils/audio_processor.py
@@ -29,7 +29,7 @@ utils/audio_processor.py
         │
         ▼
 core/transcriber.py
-  ├── English  → Groq Whisper (whisper-large-v3-turbo)
+  ├── English  → Groq Whisper (whisper-large-v3-turbo, hosted API)
   └── Hinglish → Sarvam AI saaras:v2.5  (STT + translate)
         │
         ▼
@@ -37,7 +37,7 @@ core/transcriber.py
         │
         ├──► core/summarizer.py   → map-reduce summary  (Llama 3.3-70B via Groq)
         ├──► core/extractor.py    → action items / decisions / open questions
-        └──► core/vector_store.py → ChromaDB (all-MiniLM-L6-v2 embeddings)
+        └──► core/vector_store.py → ChromaDB (all-MiniLM-L6-v2 embeddings, per-meeting collection)
                                          │
                                          ▼
                                   core/rag_engine.py
@@ -48,14 +48,16 @@ core/transcriber.py
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| `POST` | `/meetings` | Submit a YouTube URL or file path; returns `meeting_id` |
-| `POST` | `/meetings/upload` | Upload a local audio/video file directly |
+| `POST` | `/meetings` | Submit a YouTube URL; returns `meeting_id` |
+| `POST` | `/meetings/upload` | Upload a local audio/video file directly (multipart) |
 | `GET` | `/meetings/{id}` | Poll status (`queued → fetching_audio → transcribing → summarizing → extracting → indexing → done`) and retrieve result |
 | `POST` | `/meetings/{id}/ask` | Ask a question about the meeting (RAG) |
 | `DELETE` | `/meetings/{id}` | Remove a meeting from memory |
 | `GET` | `/health` | Health check |
 
-Each meeting is processed in a background thread so the API stays non-blocking. Meeting state is held in-memory (swap `MEETINGS` dict for a DB for persistence).
+Each meeting is processed in a background thread so the API stays non-blocking. Meeting state is held in-memory (swap the `MEETINGS` dict for a DB if you need persistence across restarts).
+
+The backend also serves the frontend directly via FastAPI's built-in `app.frontend()` (added in FastAPI 0.138.0), so the whole app — API + UI — runs as a single process. No separate static host or second deployment needed.
 
 ### Frontend (`frontend/index.html`)
 
@@ -66,6 +68,7 @@ A single-file vanilla HTML/CSS/JS app named **RECAP** — no build step, no fram
 - Results grid: summary, action items, key decisions, open questions, full transcript
 - Chat panel with polling `/ask` for RAG Q&A
 - Design: dark amber theme, `Fraunces` serif + `JetBrains Mono`
+- Served same-origin from the FastAPI backend, so it talks to relative API paths (no hardcoded host)
 
 ---
 
@@ -73,34 +76,34 @@ A single-file vanilla HTML/CSS/JS app named **RECAP** — no build step, no fram
 
 | Layer | Technology |
 |-------|-----------|
-| Backend | FastAPI + Uvicorn |
+| Backend | FastAPI (≥0.138.0) + Uvicorn |
 | LLM | Groq API — Llama 3.3-70B Versatile |
-| STT (English) | Groq — Whisper Large v3 Turbo |
+| STT (English) | Groq — Whisper Large v3 Turbo (hosted API) |
 | STT (Hinglish) | Sarvam AI — saaras:v2.5 |
 | LLM Orchestration | LangChain LCEL (chains, prompts, parsers) |
 | Embeddings | HuggingFace `all-MiniLM-L6-v2` |
-| Vector Store | ChromaDB (local, persisted) |
+| Vector Store | ChromaDB (local, persisted, one collection per meeting) |
 | Audio Processing | yt-dlp, pydub, ffmpeg |
-| Frontend | Vanilla HTML/CSS/JS |
+| Frontend | Vanilla HTML/CSS/JS, served by FastAPI's `app.frontend()` |
 
 ---
 
 ## Project Structure
 
 ```
-AI Video Assistant/
-├── backend.py              # FastAPI app — REST API wrapping the pipeline
+RECAP/
+├── backend.py              # FastAPI app — REST API + serves the frontend
 ├── main.py                 # CLI entry point (run pipeline interactively)
 ├── test.py                 # Quick smoke-test script
 ├── requirements.txt
 ├── .env.example
 │
 ├── core/
-│   ├── transcriber.py      # Dual-engine STT: Groq Whisper + Sarvam AI
+│   ├── transcriber.py      # Dual-engine STT: Groq Whisper (hosted) + Sarvam AI
 │   ├── summarizer.py       # Map-reduce summarization (LangChain LCEL)
 │   ├── extractor.py        # Action items / decisions / questions extraction
-│   ├── rag_engine.py       # Build & query RAG chain over transcript
-│   └── vector_store.py     # ChromaDB build, load, retriever factory
+│   ├── rag_engine.py       # Build & query RAG chain over transcript (per meeting_id)
+│   └── vector_store.py     # ChromaDB build, load, retriever factory (per-meeting collections)
 │
 ├── utils/
 │   └── audio_processor.py  # YouTube download, WAV conversion, chunking
@@ -124,6 +127,8 @@ AI Video Assistant/
 pip install -r requirements.txt
 ```
 
+> Requires `fastapi>=0.138.0` for `app.frontend()` to be available. If upgrading from an older FastAPI version, run `pip install --upgrade "fastapi>=0.138.0"`.
+
 ### Configure environment
 
 ```bash
@@ -135,10 +140,10 @@ cp .env.example .env
 
 ### Run
 
-**API (recommended)**
+**API + UI (recommended — single process)**
 ```bash
 uvicorn backend:app --reload
-# then open frontend/index.html in your browser
+# open http://localhost:8000 — FastAPI serves both the API and the RECAP UI
 ```
 
 **CLI**
@@ -151,8 +156,8 @@ python main.py
 
 ## Example Flow
 
-1. Paste a YouTube meeting URL into the frontend and hit **Run pipeline**
-2. Watch the RECAP progress bar move through: Fetch → Transcribe → Summarize → Extract → Index
+1. Open RECAP in the browser, choose **YouTube URL** or **Upload file**, and hit **Run pipeline**
+2. Watch the progress bar move through: Fetch → Transcribe → Summarize → Extract → Index
 3. View the generated title, bullet-point summary, action items with owners, key decisions, and open questions
 4. Switch to the **Chat** panel and ask: *"Who is responsible for the Q3 report?"* or *"What was decided about the budget?"*
 
@@ -171,7 +176,8 @@ python main.py
 
 ## Notes
 
-- ChromaDB data is persisted locally in `vector_db/`. Each meeting gets its own collection (keyed by `meeting_id`).
-- Audio chunks are written to `downloads/` and are gitignored.
+- ChromaDB data is persisted locally in `vector_db/`. Each meeting gets its own collection (keyed by `meeting_id`), so chat answers stay scoped to that meeting and don't leak across users/sessions.
+- Audio chunks are written to a temp/`downloads/` directory and are gitignored.
 - The Sarvam STT endpoint accepts max 30s audio; `transcriber.py` automatically splits chunks into 25s pieces before sending.
 - For very long meetings, summarization uses a map-reduce approach — each chunk is summarized independently, then combined into a final summary.
+- Meeting state and vector collections live in memory/disk on the running server process — they don't survive a restart or redeploy unless you attach persistent storage or move to a DB-backed store.

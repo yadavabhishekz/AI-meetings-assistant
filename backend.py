@@ -173,3 +173,8 @@ def delete_meeting(meeting_id: str):
 @app.get("/health")
 def health():
     return {"ok": True}
+
+
+# Serve the static frontend (frontend/index.html) from the same process.
+# Requires fastapi>=0.138.0. API routes above always take precedence.
+app.frontend("/", directory="frontend")

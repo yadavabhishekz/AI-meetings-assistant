@@ -10,3 +10,4 @@ uploads/
 .venv/
 venv/
 .vscode 
+test/
